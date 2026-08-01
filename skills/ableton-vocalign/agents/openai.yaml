@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ableton VocAlign Workflow"
+  short_description: "Run guarded Ableton VocAlign sidechain alignment"
+  default_prompt: "Use $ableton-vocalign to align a vocal dub to a guide in Ableton Live."
