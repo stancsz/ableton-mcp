@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ableton Vocal EDM Processing"
+  short_description: "Shape smooth EDM vocals and beat-locked vocal buses"
+  default_prompt: "Use $ableton-vocal-edm-processing to diagnose and smooth harsh vocals, then make the vocal bus breathe with the beat."
