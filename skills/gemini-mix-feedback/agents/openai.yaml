@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gemini Mix Feedback"
+  short_description: "Upload a mix or stem for timestamped feedback"
+  default_prompt: "Use $gemini-mix-feedback to send my authorized stem or full mix to Gemini and return prioritized, timestamped mix notes."
