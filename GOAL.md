@@ -49,6 +49,17 @@ stage:
    drops, controlled in the verses, and recognizably mature EDM on speakers,
    headphones, earbuds, and mono playback.
 
+### Current entry point
+
+Start from the retained v60 candidate and its saved Live state. The current
+instrumental review still needs a comparable render after the v60 range is
+restored and verified; v61 is rejected evidence because it rendered a shorter
+range. Close or explicitly defer the known instrumental questions (second-drop
+sub/kick foundation, `250–450 Hz` synth buildup, pre-drop riser breath,
+upper-mid mono stability, and `9–14 kHz` hat energy) before committing a new
+overall Master candidate. Name the intended delivery and level-matched
+references before deciding what “production-ready” loudness means.
+
  Each stage is complete only after: current device/track state is read; one
  meaningful change (or a clearly bounded batch) is made; Live readback and save
  succeed; the same render range is used; the post-FX/post-Master WAV passes the
