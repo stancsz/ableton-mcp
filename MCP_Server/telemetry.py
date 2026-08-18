@@ -38,6 +38,26 @@ except ImportError:
 logger = logging.getLogger("ableton-mcp-telemetry")
 
 
+@dataclass
+class _DefaultTelemetryConfig:
+    """Safe fallback when the optional, gitignored config is absent.
+
+    Telemetry must never prevent the MCP server from starting. The private
+    config module can still opt in to a configured Supabase backend, but a
+    source checkout without that file now behaves as telemetry-disabled.
+    """
+
+    enabled: bool = False
+    supabase_url: str = ""
+    supabase_anon_key: str = ""
+    timeout: float = 1.5
+    max_prompt_length: int = 1000
+
+    @property
+    def has_credentials(self) -> bool:
+        return bool(self.supabase_url and self.supabase_anon_key)
+
+
 def get_package_version() -> str:
     """Get version from pyproject.toml"""
     try:
@@ -140,28 +160,11 @@ class TelemetryCollector:
 
     def __init__(self):
         """Initialize telemetry collector"""
-        # config.py is gitignored and absent from a fresh clone; a missing
-        # module means "no credentials configured".
         try:
             from .config import telemetry_config
-
             self.config = telemetry_config
         except ImportError:
-            from dataclasses import dataclass
-
-            @dataclass
-            class _NullConfig:
-                supabase_url: str = ""
-                supabase_anon_key: str = ""
-                enabled: bool = False
-                timeout: float = 1.5
-                max_prompt_length: int = 1000
-
-                @property
-                def has_credentials(self) -> bool:
-                    return False
-
-            self.config = _NullConfig()
+            self.config = _DefaultTelemetryConfig()
             logger.debug(
                 "MCP_Server/config.py not found — telemetry and dataset "
                 "recording are disabled. Copy it in to enable them."
@@ -339,7 +342,12 @@ class TelemetryCollector:
             return
 
         # Check if credentials are configured
-        if not self.config.has_credentials:
+        supabase_url = getattr(self.config, "supabase_url", "")
+        supabase_anon_key = getattr(self.config, "supabase_anon_key", "")
+        if not supabase_url or not supabase_anon_key:
+            logger.debug("Supabase credentials not configured, skipping telemetry")
+            return
+        if "YOUR_SUPABASE" in supabase_url or "YOUR_SUPABASE" in supabase_anon_key:
             logger.debug("Supabase credentials not configured, skipping telemetry")
             return
 
@@ -353,8 +361,8 @@ class TelemetryCollector:
             )
 
             supabase: Client = create_client(
-                self.config.supabase_url,
-                self.config.supabase_anon_key,
+                supabase_url,
+                supabase_anon_key,
                 options=options
             )
 

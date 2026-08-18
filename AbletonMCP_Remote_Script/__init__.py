@@ -9,6 +9,11 @@ import threading
 import time
 import traceback
 
+try:
+    INTEGER_TYPES = (int, long)
+except NameError:
+    INTEGER_TYPES = (int,)
+
 # Change queue import for Python 2
 try:
     import Queue as queue  # Python 2
@@ -262,7 +267,16 @@ class AbletonMCP(ControlSurface):
         """Process a command from the client and return a response"""
         command_type = command.get("type", "")
         params = command.get("params", {})
-        
+
+        # Refresh the cached song reference before dispatching. If the user
+        # loads a different Set while this Control Surface instance is
+        # already running, the handle captured in __init__ can go stale,
+        # causing a None.None(Song) type error on the first command afterward.
+        try:
+            self._song = self.song()
+        except Exception:
+            pass
+
         # Initialize response
         response = {
             "status": "success",
@@ -278,6 +292,8 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
+            elif command_type == "get_master_track_info":
+                response["result"] = self._get_master_track_info()
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
                                  "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
@@ -287,6 +303,7 @@ class AbletonMCP(ControlSurface):
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback",
                                  "load_browser_item", "load_instrument_or_effect",
+                                 "set_device_parameter",
                                  # Arrangement view – must run on the main thread
                                  "switch_to_arrangement_view", "set_current_song_time",
                                  "duplicate_session_clip_to_arrangement",
@@ -298,6 +315,13 @@ class AbletonMCP(ControlSurface):
                 # Define a function to execute on the main thread
                 def main_thread_task():
                     try:
+                        # Refresh on Live's main thread as well as on the
+                        # socket worker. A Set can change between dispatch and
+                        # execution, and Live objects are main-thread-owned.
+                        try:
+                            self._song = self.song()
+                        except Exception:
+                            pass
                         result = None
                         if command_type == "create_midi_track":
                             index = params.get("index", -1)
@@ -341,6 +365,13 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "set_tempo":
                             tempo = params.get("tempo", 120.0)
                             result = self._set_tempo(tempo)
+                        elif command_type == "set_device_parameter":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            parameter_index = params.get("parameter_index", 0)
+                            value = params.get("value")
+                            result = self._set_device_parameter(
+                                track_index, device_index, parameter_index, value)
                         elif command_type == "fire_clip":
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
@@ -553,6 +584,46 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting session info: " + str(e))
             raise
     
+    def _serialize_device_info(self, device_index, device):
+        """Serialize a device, including its parameters."""
+        params = []
+        for p_index, parameter in enumerate(device.parameters):
+            entry = {
+                "index": p_index,
+                "name": parameter.name,
+                "value": parameter.value,
+                "min": parameter.min,
+                "max": parameter.max,
+            }
+            try:
+                entry["display_value"] = parameter.str_for_value(parameter.value)
+            except Exception:
+                pass
+            params.append(entry)
+        return {
+            "index": device_index,
+            "name": device.name,
+            "class_name": device.class_name,
+            "type": self._get_device_type(device),
+            "parameters": params,
+        }
+
+    def _get_master_track_info(self):
+        """Get information about the Master track and its device chain."""
+        try:
+            master = self._song.master_track
+            devices = [self._serialize_device_info(i, device)
+                       for i, device in enumerate(master.devices)]
+            return {
+                "name": "Master",
+                "volume": master.mixer_device.volume.value,
+                "panning": master.mixer_device.panning.value,
+                "devices": devices,
+            }
+        except Exception as e:
+            self.log_message("Error getting master track info: " + str(e))
+            raise
+
     def _get_track_info(self, track_index):
         """Get information about a track"""
         try:
@@ -580,16 +651,10 @@ class AbletonMCP(ControlSurface):
                     "clip": clip_info
                 })
             
-            # Get devices
-            devices = []
-            for device_index, device in enumerate(track.devices):
-                devices.append({
-                    "index": device_index,
-                    "name": device.name,
-                    "class_name": device.class_name,
-                    "type": self._get_device_type(device)
-                })
-            
+            # Get devices (including each device's parameters)
+            devices = [self._serialize_device_info(i, device)
+                       for i, device in enumerate(track.devices)]
+
             result = {
                 "index": track_index,
                 "name": track.name,
@@ -597,7 +662,8 @@ class AbletonMCP(ControlSurface):
                 "is_midi_track": track.has_midi_input,
                 "mute": track.mute,
                 "solo": track.solo,
-                "arm": track.arm,
+                # Group/Return/Master tracks do not expose an Arm state.
+                "arm": track.arm if track.can_be_armed else False,
                 "volume": track.mixer_device.volume.value,
                 "panning": track.mixer_device.panning.value,
                 "clip_slots": clip_slots,
@@ -663,6 +729,65 @@ class AbletonMCP(ControlSurface):
             return result
         except Exception as e:
             self.log_message("Error setting track name: " + str(e))
+            raise
+
+    def _set_device_parameter(self, track_index, device_index, parameter_index, value):
+        """Set one non-Master device parameter and return its readback."""
+        try:
+            if value is None:
+                raise ValueError("Parameter value is required")
+            for index_name, index_value in (
+                    ("track_index", track_index),
+                    ("device_index", device_index),
+                    ("parameter_index", parameter_index)):
+                if (not isinstance(index_value, INTEGER_TYPES) or
+                        isinstance(index_value, bool)):
+                    raise TypeError("%s must be an integer" % index_name)
+            if track_index == -1:
+                track = self._song.master_track
+            else:
+                if track_index < 0 or track_index >= len(self._song.tracks):
+                    raise IndexError("Track index out of range")
+                track = self._song.tracks[track_index]
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+
+            device = track.devices[device_index]
+            if parameter_index < 0 or parameter_index >= len(device.parameters):
+                raise IndexError("Parameter index out of range")
+
+            parameter = device.parameters[parameter_index]
+            requested_value = float(value)
+            if (requested_value != requested_value or
+                    requested_value == float("inf") or
+                    requested_value == float("-inf")):
+                raise ValueError("Parameter value must be finite")
+            minimum = float(parameter.min)
+            maximum = float(parameter.max)
+            if requested_value < minimum or requested_value > maximum:
+                raise ValueError(
+                    "Parameter value %s is outside [%s, %s]" %
+                    (requested_value, minimum, maximum))
+
+            parameter.value = requested_value
+            readback = {
+                "track_index": track_index,
+                "track_name": track.name,
+                "device_index": device_index,
+                "device_name": device.name,
+                "parameter_index": parameter_index,
+                "parameter_name": parameter.name,
+                "value": parameter.value,
+                "min": parameter.min,
+                "max": parameter.max,
+            }
+            try:
+                readback["display_value"] = parameter.str_for_value(parameter.value)
+            except Exception:
+                pass
+            return readback
+        except Exception as e:
+            self.log_message("Error setting device parameter: " + str(e))
             raise
     
     def _create_clip(self, track_index, clip_index, length):
@@ -2261,33 +2386,6 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting session snapshot: " + str(e))
             raise
 
-    def _set_device_parameter(self, track_index, device_index, parameter_index, value):
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            track = self._song.tracks[track_index]
-            if device_index < 0 or device_index >= len(track.devices):
-                raise IndexError("Device index out of range")
-            device = track.devices[device_index]
-            if parameter_index < 0 or parameter_index >= len(device.parameters):
-                raise IndexError("Parameter index out of range")
-            param = device.parameters[parameter_index]
-            old = float(param.value)
-            param.value = float(value)
-            return {
-                "track_index": track_index,
-                "device_index": device_index,
-                "parameter_index": parameter_index,
-                "name": param.name,
-                "old_value": old,
-                "value": float(param.value),
-                "min": float(param.min),
-                "max": float(param.max),
-            }
-        except Exception as e:
-            self.log_message("Error setting device parameter: " + str(e))
-            raise
-
     def get_browser_tree(self, category_type="all"):
         """
         Get a simplified tree of browser categories.
@@ -2315,25 +2413,80 @@ class AbletonMCP(ControlSurface):
             result = {
                 "type": category_type,
                 "categories": [],
-                "available_categories": browser_attrs
+                "available_categories": browser_attrs,
+                "total_folders": 0,
+                "total_items": 0,
+                "truncated": False,
             }
-            
-            # Helper function to process a browser item and its children
+
+            # Browser libraries can be large. Keep the response bounded while
+            # still returning a real hierarchy instead of an empty children
+            # array for every root category.
+            max_depth = 8
+            max_items = 2000
+
+            # Helper function to process a browser item and its children.
             def process_item(item, depth=0):
                 if not item:
                     return None
-                
-                result = {
-                    "name": item.name if hasattr(item, 'name') else "Unknown",
-                    "is_folder": hasattr(item, 'children') and bool(item.children),
-                    "is_device": hasattr(item, 'is_device') and item.is_device,
-                    "is_loadable": hasattr(item, 'is_loadable') and item.is_loadable,
-                    "uri": item.uri if hasattr(item, 'uri') else None,
+
+                if result["total_items"] >= max_items:
+                    result["truncated"] = True
+                    return None
+
+                try:
+                    name = item.name if hasattr(item, 'name') else "Unknown"
+                except Exception:
+                    name = "Unknown"
+                try:
+                    uri = item.uri if hasattr(item, 'uri') else None
+                except Exception:
+                    uri = None
+                try:
+                    is_device = item.is_device if hasattr(item, 'is_device') else False
+                except Exception:
+                    is_device = False
+                try:
+                    is_loadable = item.is_loadable if hasattr(item, 'is_loadable') else False
+                except Exception:
+                    is_loadable = False
+
+                item_result = {
+                    "name": name,
+                    "is_folder": False,
+                    "is_device": is_device,
+                    "is_loadable": is_loadable,
+                    "uri": uri,
                     "children": []
                 }
-                
-                
-                return result
+
+                result["total_items"] += 1
+
+                try:
+                    children = item.children if hasattr(item, 'children') else []
+                    children = children or []
+                except Exception:
+                    children = []
+
+                item_result["is_folder"] = bool(children)
+                if children:
+                    result["total_folders"] += 1
+
+                if children and depth >= max_depth:
+                    item_result["has_more"] = True
+                    result["truncated"] = True
+                    return item_result
+
+                for child in children:
+                    if result["total_items"] >= max_items:
+                        item_result["has_more"] = True
+                        result["truncated"] = True
+                        break
+                    child_result = process_item(child, depth + 1)
+                    if child_result:
+                        item_result["children"].append(child_result)
+
+                return item_result
             
             # Process based on category type and available attributes
             if (category_type == "all" or category_type == "instruments") and hasattr(app.browser, 'instruments'):
@@ -2395,8 +2548,8 @@ class AbletonMCP(ControlSurface):
                     except Exception as e:
                         self.log_message("Error processing {0}: {1}".format(attr, str(e)))
             
-            self.log_message("Browser tree generated for {0} with {1} root categories".format(
-                category_type, len(result['categories'])))
+            self.log_message("Browser tree generated for {0} with {1} root categories and {2} items".format(
+                category_type, len(result['categories']), result['total_items']))
             return result
             
         except Exception as e:

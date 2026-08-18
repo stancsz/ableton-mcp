@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ableton Mix Audit"
+  short_description: "Audit mix maturity with local checks and Gemini listening"
+  default_prompt: "Use $ableton-mix-audit to audit my Ableton mix with deterministic checks and an optional Gemini listening review."

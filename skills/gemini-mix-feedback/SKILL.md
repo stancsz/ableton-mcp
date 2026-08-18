@@ -32,6 +32,26 @@ release decision.
 - Use the file as supplied. Do not make a hidden conversion, export, upload to
   another service, or include unrelated files.
 
+## Preferred execution path
+
+For a local Windows project with an authenticated `gcloud` account, use the
+project helper first:
+
+```powershell
+python tools\gemini_audio_feedback.py <exact-authorized-audio-path> --project <project-id>
+```
+
+It calls Gemini 3.7 through the audio-capable Vertex `generateContent` endpoint
+with the exact supplied file. Require `AUDIO_GROUNDING: PASS`, an audio modality
+usage record, and timestamped observations. Preserve the model, project, file
+hash/path, and usage metadata. This route may incur Google Cloud API usage and
+is not automatically covered by an Antigravity subscription.
+
+Antigravity CLI is a companion reasoning route only: its current agent contract
+accepts text and images, not audio. It may summarize or challenge a returned
+feedback report, but its response cannot be used as evidence that it heard the
+music. Use the browser flow below only when the direct helper is unavailable.
+
 ## Safety gates
 
 - Treat `gemini.google.com` as an external destination. Before uploading,

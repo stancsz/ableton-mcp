@@ -50,6 +50,9 @@ coverage.xml
 *.log
 logs/
 
+# Local failure and repair queue (may contain sanitized runtime diagnostics)
+.ableton-mcp/
+
 # Environment variables
 .env
 .env.local

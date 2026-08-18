@@ -117,6 +117,16 @@ That's it — ask Claude to build something.
 | **Session control** | Start and stop playback, fire clips, and control transport across Session View and Arrangement View |
 | **Anonymous telemetry** | Usage tracking to help improve the tool (can be disabled) |
 
+## Production and mix-audit guidance
+
+For the verified Ableton control loop, plugin-first vocal/mix techniques,
+Gemini audio-feedback protocol, export hygiene, and D4 release checklist, see
+[`docs/ABLETON_MIXING_PLAYBOOK.md`](docs/ABLETON_MIXING_PLAYBOOK.md). The
+repository's reusable audit workflow is in
+[`skills/ableton-mix-audit/SKILL.md`](skills/ableton-mix-audit/SKILL.md).
+The final owner listening handoff is
+[`docs/D4_RELEASE_LISTENING_CHECKLIST.md`](docs/D4_RELEASE_LISTENING_CHECKLIST.md).
+
 ## Components
 
 The system consists of two main components:
@@ -241,6 +251,9 @@ Once the config file has been set on Claude, and the remote script is running in
 - Load instruments and effects from Ableton's browser
 - Add notes to MIDI clips
 - Change tempo and other session parameters
+- Validate/request a guarded `export_audio` Main render contract. Live's public
+  API does not expose native offline rendering, so the current helper reports
+  a structured blocker until its Windows UI bridge is explicitly enabled.
 
 ### Example Commands
 
@@ -269,6 +282,16 @@ Here are some examples of what you can ask Claude to do:
 | **Connection issues** | Make sure the Ableton Remote Script is loaded, and the MCP server is configured on Claude |
 | **Timeout errors** | Try simplifying your requests or breaking them into smaller steps |
 | **Have you tried turning it off and on again?** | If you're still having connection errors, try restarting both Claude and Ableton Live |
+
+The server also writes sanitized, local failure records to `.ableton-mcp/failures/` when connection or command processing fails. Inspect and repair those records with the repository skill:
+
+```bash
+python -m MCP_Server.repair list --status open
+python -m MCP_Server.repair plan --id <failure-id>
+python -m MCP_Server.repair run --id <failure-id> --action socket_probe --host localhost --port 9877
+```
+
+See `skills/ableton-mcp-recovery/SKILL.md` for the bounded repair workflow. It never replays a state-changing Ableton command automatically.
 
 ## Technical Details
 

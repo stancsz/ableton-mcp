@@ -6,13 +6,21 @@ import logging
 import os
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, List, Union
 
+from .failure_log import record_failure
 from .telemetry import record_startup
 from .telemetry_decorator import telemetry_tool, rich_telemetry_tool
 from .dataset import dataset_enabled, get_recorder
 from .dataset.trajectory_decorator import trajectory_tool
+from tools.live_export import (
+    ExportRequest,
+    LiveExportError,
+    capability_report,
+    export_audio as run_live_export,
+)
 
 ABLETON_HOST = os.environ.get("ABLETON_HOST", "localhost")
 ABLETON_PORT = int(os.environ.get("ABLETON_PORT", "9877"))
@@ -47,6 +55,12 @@ class AbletonConnection:
             return True
         except Exception as e:
             logger.error(f"Failed to connect to Ableton at {self.host}:{self.port}: {str(e)}")
+            record_failure(
+                "mcp_server",
+                "connect",
+                e,
+                {"host": self.host, "port": self.port},
+            )
             self.sock = None
             return False
     
@@ -147,19 +161,23 @@ class AbletonConnection:
         # large audio file). Give them a wider socket timeout so we don't time
         # out before the Remote Script's own queue does.
         long_running_commands = {"create_audio_clip": 65.0}
+        timeout = long_running_commands.get(
+            command_type,
+            15.0 if is_modifying_command else 10.0,
+        )
         
         try:
             logger.info(f"Sending command: {command_type} with params: {params}")
-            
+
+            # Bound both the send and receive phases. The previous timeout is
+            # still applied before receiving below so this remains explicit at
+            # the response boundary as well.
+            self.sock.settimeout(timeout)
             # Send the command
             self.sock.sendall(json.dumps(command).encode('utf-8'))
             logger.info(f"Command sent, waiting for response...")
-            
-            # Set timeout based on command type
-            if command_type in long_running_commands:
-                timeout = long_running_commands[command_type]
-            else:
-                timeout = 15.0 if is_modifying_command else 10.0
+
+            # Set the same timeout explicitly before receiving the response.
             self.sock.settimeout(timeout)
 
             # Receive the response
@@ -175,22 +193,66 @@ class AbletonConnection:
                 raise Exception(response.get("message", "Unknown error from Ableton"))
             
             return response.get("result", {})
-        except socket.timeout:
+        except socket.timeout as e:
             logger.error("Socket timeout while waiting for response from Ableton")
+            record_failure(
+                "mcp_server",
+                "send_command",
+                e,
+                {
+                    "command_type": command_type,
+                    "host": self.host,
+                    "port": self.port,
+                    "timeout_seconds": timeout,
+                },
+            )
             self.sock = None
             raise Exception("Timeout waiting for Ableton response")
         except (ConnectionError, BrokenPipeError, ConnectionResetError) as e:
             logger.error(f"Socket connection error: {str(e)}")
+            record_failure(
+                "mcp_server",
+                "send_command",
+                e,
+                {
+                    "command_type": command_type,
+                    "host": self.host,
+                    "port": self.port,
+                    "timeout_seconds": timeout,
+                },
+            )
             self.sock = None
             raise Exception(f"Connection to Ableton lost: {str(e)}")
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON response from Ableton: {str(e)}")
+            record_failure(
+                "mcp_server",
+                "send_command",
+                e,
+                {
+                    "command_type": command_type,
+                    "host": self.host,
+                    "port": self.port,
+                    "timeout_seconds": timeout,
+                },
+            )
             if 'response_data' in locals() and response_data:
                 logger.error(f"Raw response (first 200 bytes): {response_data[:200]}")
             self.sock = None
             raise Exception(f"Invalid response from Ableton: {str(e)}")
         except Exception as e:
             logger.error(f"Error communicating with Ableton: {str(e)}")
+            record_failure(
+                "mcp_server",
+                "send_command",
+                e,
+                {
+                    "command_type": command_type,
+                    "host": self.host,
+                    "port": self.port,
+                    "timeout_seconds": timeout,
+                },
+            )
             self.sock = None
             raise Exception(f"Communication error with Ableton: {str(e)}")
 
@@ -566,10 +628,7 @@ def set_device_parameter(
                 "value": value,
             },
         )
-        return (
-            f"Set {result.get('name', 'parameter')} "
-            f"{result.get('old_value')} → {result.get('value')}"
-        )
+        return json.dumps(result, indent=2)
     except Exception as e:
         logger.error(f"Error setting device parameter: {str(e)}")
         return f"Error setting device parameter: {str(e)}"
@@ -615,6 +674,22 @@ def get_session_snapshot(
         logger.error(f"Error getting session snapshot: {str(e)}")
         return f"Error getting session snapshot: {str(e)}"
 
+
+@mcp.tool()
+@telemetry_tool("get_master_track_info")
+def get_master_track_info(ctx: Context, user_prompt: str = "") -> str:
+    """Get information about the Master track and its device chain.
+
+    The Master track is not included in the indexed track list, so it has a
+    dedicated endpoint.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_master_track_info")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting master track info from Ableton: {str(e)}")
+        return f"Error getting master track info: {str(e)}"
 
 @mcp.tool()
 @telemetry_tool("create_midi_track")
@@ -877,6 +952,48 @@ def set_tempo(ctx: Context, tempo: float, user_prompt: str = "") -> str:
     except Exception as e:
         logger.error(f"Error setting tempo: {str(e)}")
         return f"Error setting tempo: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("export_audio")
+def export_audio(
+    ctx: Context,
+    output_path: str,
+    render_start: str = "",
+    render_length_bars: float = 0.0,
+    expected_duration_seconds: float = 0.0,
+    sample_rate: int = 44100,
+    bit_depth: int = 24,
+    rendered_track: str = "Main",
+    user_prompt: str = "",
+) -> str:
+    """Export the Main output through the guarded desktop bridge.
+
+    Ableton's public Remote Script API does not expose offline rendering, so
+    this tool reports a structured capability/blocker until the opt-in Windows
+    UI bridge is enabled and its range/completion checks pass.  It never
+    reports success from a mere shortcut or dialog click.
+    """
+    try:
+        request = ExportRequest(
+            output_path=Path(output_path),
+            render_start=render_start or None,
+            render_length_bars=render_length_bars or None,
+            expected_duration_seconds=expected_duration_seconds or None,
+            sample_rate=sample_rate,
+            bit_depth=bit_depth,
+            rendered_track=rendered_track,
+        )
+        result = run_live_export(request)
+        return json.dumps(result, indent=2)
+    except LiveExportError as e:
+        return json.dumps(
+            {"status": "blocked", "error": str(e), "capabilities": capability_report()},
+            indent=2,
+        )
+    except Exception as e:
+        logger.error(f"Error exporting audio: {str(e)}")
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
 
 
 @mcp.tool()
