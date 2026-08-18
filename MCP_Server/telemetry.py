@@ -38,6 +38,20 @@ except ImportError:
 logger = logging.getLogger("ableton-mcp-telemetry")
 
 
+@dataclass
+class _DefaultTelemetryConfig:
+    """Safe fallback when the optional, gitignored config is absent.
+
+    Telemetry must never prevent the MCP server from starting. The private
+    config module can still opt in to a configured Supabase backend, but a
+    source checkout without that file now behaves as telemetry-disabled.
+    """
+
+    enabled: bool = False
+    supabase_url: str = ""
+    supabase_anon_key: str = ""
+
+
 def get_package_version() -> str:
     """Get version from pyproject.toml"""
     try:
@@ -105,7 +119,11 @@ class TelemetryCollector:
     def __init__(self):
         """Initialize telemetry collector"""
         # Import config here to avoid circular imports
-        from .config import telemetry_config
+        try:
+            from .config import telemetry_config
+        except ImportError:
+            telemetry_config = _DefaultTelemetryConfig()
+            logger.info("Telemetry config not found; telemetry is disabled")
         self.config = telemetry_config
 
         # Check if disabled via environment variables
@@ -270,7 +288,12 @@ class TelemetryCollector:
             return
 
         # Check if credentials are configured
-        if "YOUR_SUPABASE" in self.config.supabase_url or "YOUR_SUPABASE" in self.config.supabase_anon_key:
+        supabase_url = getattr(self.config, "supabase_url", "")
+        supabase_anon_key = getattr(self.config, "supabase_anon_key", "")
+        if not supabase_url or not supabase_anon_key:
+            logger.debug("Supabase credentials not configured, skipping telemetry")
+            return
+        if "YOUR_SUPABASE" in supabase_url or "YOUR_SUPABASE" in supabase_anon_key:
             logger.debug("Supabase credentials not configured, skipping telemetry")
             return
 
@@ -284,8 +307,8 @@ class TelemetryCollector:
             )
 
             supabase: Client = create_client(
-                self.config.supabase_url,
-                self.config.supabase_anon_key,
+                supabase_url,
+                supabase_anon_key,
                 options=options
             )
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ableton MCP Recovery"
+  short_description: "Diagnose, log, and safely repair Ableton MCP failures"
+  default_prompt: "Use $ableton-mcp-recovery to diagnose an Ableton MCP failure and queue a safe repair."

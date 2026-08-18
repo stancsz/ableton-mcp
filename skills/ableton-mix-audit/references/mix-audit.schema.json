@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Ableton Mix Audit",
+  "type": "object",
+  "required": ["schema_version", "source", "config", "metrics", "checks", "summary"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "source": {
+      "type": "object",
+      "required": ["path", "kind", "sample_rate", "channels", "duration_sec"],
+      "properties": {
+        "path": {"type": "string"},
+        "kind": {"enum": ["full-track", "stem"]},
+        "sample_rate": {"type": "integer", "minimum": 1},
+        "channels": {"type": "integer", "minimum": 1},
+        "bit_depth": {"type": ["integer", "null"]},
+        "duration_sec": {"type": "number", "minimum": 0},
+        "sha256": {"type": ["string", "null"]}
+      }
+    },
+    "config": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {"enum": ["mix", "pre-master", "release"]},
+        "reference": {"type": ["string", "null"]},
+        "vocal": {"type": ["string", "null"]}
+      }
+    },
+    "metrics": {"type": "object"},
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "status", "class", "message"],
+        "properties": {
+          "id": {"type": "string"},
+          "status": {"enum": ["pass", "warn", "fail", "unknown"]},
+          "class": {"enum": ["hard_gate", "delivery_gate", "proxy", "config"]},
+          "message": {"type": "string"},
+          "evidence": {"type": "object"}
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["decision", "evidence_level", "counts"],
+      "properties": {
+        "decision": {
+          "enum": [
+            "NOT_AUDITABLE",
+            "TECHNICAL_FAIL",
+            "MIX_RISK_REVIEW",
+            "HUMAN_LISTENING_REQUIRED",
+            "READY_FOR_HUMAN_RELEASE_DECISION"
+          ]
+        },
+        "evidence_level": {"pattern": "^D[0-4]$"},
+        "counts": {"type": "object"}
+      }
+    }
+  }
+}
