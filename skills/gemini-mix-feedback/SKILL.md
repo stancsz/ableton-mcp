@@ -17,6 +17,11 @@ notes that the user can test in Ableton. Gemini's answer is a review aid, not
 proof that a mix is correct; require the user to make the final listening and
 release decision.
 
+For the project-specific visual-plugin versus human-taste routing, use
+`docs/GEMINI_TARGETED_MIXING_PROTOCOL.md`. Every iterative request should have
+one target, one contrast, and one decision; do not ask Gemini to recreate an
+analyzer report or provide a general mixing tutorial.
+
 ## Scope and inputs
 
 - Require a concrete local Windows path. If the user has not supplied one,
@@ -38,14 +43,50 @@ For a local Windows project with an authenticated `gcloud` account, use the
 project helper first:
 
 ```powershell
-python tools\gemini_audio_feedback.py <exact-authorized-audio-path> --project <project-id>
+python tools\gemini_audio_feedback.py <exact-authorized-audio-path> --project <project-id> --profile compact --focus "one issue"
 ```
 
 It calls Gemini 3.7 through the audio-capable Vertex `generateContent` endpoint
 with the exact supplied file. Require `AUDIO_GROUNDING: PASS`, an audio modality
 usage record, and timestamped observations. Preserve the model, project, file
-hash/path, and usage metadata. This route may incur Google Cloud API usage and
-is not automatically covered by an Antigravity subscription.
+hash/path, and usage metadata. For a musical A/B preference, use the smaller
+`--profile taste` schema (420-token safety cap, verified current-route
+`thinkingLevel=LOW`): it returns only an answer, two timestamped audible
+reasons, and one action. Use `--profile
+compact` (420-token cap) when a short ranked issue list is needed. Both profiles
+reuse an exact matching report keyed by audio SHA, model, focus, and profile;
+use `--no-cache` only for a deliberate fresh listen. This route may incur
+Google Cloud API usage and is not automatically covered by an Antigravity
+subscription.
+
+For a focused local question, an explicitly named 15--30 second PCM excerpt may
+be passed with `--kind excerpt --focus "..."`. Label the result as diagnostic
+only: it cannot support full-mix balance, translation, or release claims. Once
+the candidate is selected, run one complete full-track audit with
+`--profile release` (600-token cap) and retain that report. Do not spend a long
+response on every intermediate bounce.
+
+### Token- and round-trip-efficient project workflow
+
+Before calling Gemini, batch all deterministic work locally and through MCP:
+read the target track volumes and names, arrangement clip timing, device-chain
+inventory, exact render format/hash, and the local level/dynamics audit. Store
+that preflight as one JSON artifact. Do not call Gemini for a filename, a meter
+reading, or each mechanical parameter change.
+
+Use the smallest useful request: one target, one A/B contrast, and one decision.
+Use `taste` for an intermediate choice (`420` output tokens, LOW thinking), and
+reserve one `release` request (`600` output tokens, LOW thinking by default) for
+the selected vocal candidate. If a candidate is rejected, record the grounded
+reason and proceed to the next bounded local test; do not send unchanged audio
+again with a broader prompt. Reserve UI for an MCP capability boundary and
+follow it with one MCP readback, one save, and one render.
+
+The single-file helper must not be asked to compare against an unattached
+baseline. Ask what the current file feels like; use a separate explicit
+comparison workflow when both versions are available. The current 3.7 endpoint
+rejected `thinkingLevel=MINIMAL` during verification. Use `LOW` as the default;
+request `MEDIUM` only for a deliberate final review.
 
 Antigravity CLI is a companion reasoning route only: its current agent contract
 accepts text and images, not audio. It may summarize or challenge a returned

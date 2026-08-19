@@ -2,11 +2,11 @@
 
 Use this checklist on the current retained candidate:
 
-`C:\Users\stanc\Downloads\maybe-edm-mix-vocal-chops-audible-song-v60-female-sibilance-threshold-2026-08-17.wav`
+`C:\Users\stanc\Downloads\maybe-edm-mix-vocal-chops-audible-song-v90-male-proq4-q105-mcp-2026-08-18.wav`
 
 SHA-256:
 
-`87CC146B79B8BC913E83B283C52F8BFBEAC07B45461243FD962F25EAAC84AA32`
+`55E8639F73EE1F4DB08A486FC555836134886B5884021EFD39D77C595F1D2BA6`
 
 ## Pass 1 — normal stereo
 
@@ -20,8 +20,9 @@ SHA-256:
   sibilance, and does not retreat behind the synths.
 - [ ] `01:02–01:20`: backing vocals sit behind the lead with useful width and
   no muddy center buildup.
-- [ ] `01:35–01:55`: kick/sub remains tight through the outro without ringing,
-  pumping, or the lead synth masking the kick snap.
+- [ ] `01:23–01:36`: kick/sub remains tight through the final drop and natural
+  vocal/reverb ending without ringing, pumping, or the lead synth masking the
+  kick snap.
 - [ ] Full pass: the verse-to-hook energy arc feels musical, pleasant, and
   release-worthy at a sensible listening level.
 

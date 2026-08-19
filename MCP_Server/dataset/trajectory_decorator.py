@@ -33,6 +33,7 @@ MODIFYING_TOOLS = {
     "add_notes_to_clip",
     "set_clip_name",
     "set_arrangement_clip_name",
+    "set_arrangement_clip_end_time",
     "set_tempo",
     "set_device_parameter",
     "load_instrument_or_effect",

@@ -26,12 +26,13 @@ HOST = "0.0.0.0"
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.7.0"
+SCRIPT_VERSION = "1.10.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
     "get_session_info",
     "get_track_info",
+    "get_master_track_info",
     "get_script_info",
     "get_clip_notes",
     "get_device_parameters",
@@ -45,6 +46,10 @@ SCRIPT_CAPABILITIES = [
     "add_notes_to_clip",
     "load_instrument_or_effect",
     "get_arrangement_clips",
+    "set_arrangement_clip_end_time",
+    "set_arrangement_clip_gain",
+    "get_track_volume_info",
+    "set_track_volume_value",
     "duplicate_session_clip_to_arrangement",
     "create_locator",
     "delete_clip",
@@ -307,6 +312,9 @@ class AbletonMCP(ControlSurface):
                                  # Arrangement view – must run on the main thread
                                  "switch_to_arrangement_view", "set_current_song_time",
                                  "duplicate_session_clip_to_arrangement",
+                                 "set_arrangement_clip_end_time",
+                                 "set_arrangement_clip_gain",
+                                 "get_track_volume_info", "set_track_volume_value",
                                  "map_rack_magnitude", "inspect_rack",
                                  "create_locator"]:
                 # Use a thread-safe approach with a response queue
@@ -408,6 +416,28 @@ class AbletonMCP(ControlSurface):
                             destination_time = params.get("destination_time", 0.0)
                             result = self._duplicate_session_clip_to_arrangement(
                                 track_index, clip_index, destination_time)
+                        elif command_type == "set_arrangement_clip_end_time":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            end_time = params.get("end_time")
+                            allow_extend = params.get("allow_extend", False)
+                            result = self._set_arrangement_clip_end_time(
+                                track_index, clip_index, end_time, allow_extend
+                            )
+                        elif command_type == "set_arrangement_clip_gain":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            gain_db = params.get("gain_db")
+                            result = self._set_arrangement_clip_gain(
+                                track_index, clip_index, gain_db
+                            )
+                        elif command_type == "get_track_volume_info":
+                            track_index = params.get("track_index", 0)
+                            result = self._get_track_volume_info(track_index)
+                        elif command_type == "set_track_volume_value":
+                            track_index = params.get("track_index", 0)
+                            value = params.get("value")
+                            result = self._set_track_volume_value(track_index, value)
                         elif command_type == "map_rack_magnitude":
                             track_index = params.get("track_index", 0)
                             device_index = params.get("device_index", 0)
@@ -559,6 +589,17 @@ class AbletonMCP(ControlSurface):
     def _get_session_info(self):
         """Get information about the current session"""
         try:
+            # Group tracks do not expose an Arm state in some Live versions.
+            # Reading ``arm`` conditionally in a dict expression still lets
+            # Live raise before the response is built, so isolate this API
+            # boundary and return a stable false value for non-armable tracks.
+            arm_state = False
+            try:
+                if bool(getattr(track, "can_be_armed", False)):
+                    arm_state = bool(track.arm)
+            except Exception:
+                arm_state = False
+
             result = {
                 "tempo": self._song.tempo,
                 "signature_numerator": self._song.signature_numerator,
@@ -662,8 +703,7 @@ class AbletonMCP(ControlSurface):
                 "is_midi_track": track.has_midi_input,
                 "mute": track.mute,
                 "solo": track.solo,
-                # Group/Return/Master tracks do not expose an Arm state.
-                "arm": track.arm if track.can_be_armed else False,
+                "arm": arm_state,
                 "volume": track.mixer_device.volume.value,
                 "panning": track.mixer_device.panning.value,
                 "clip_slots": clip_slots,
@@ -674,6 +714,55 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting track info: " + str(e))
             raise
     
+    def _get_track_volume_info(self, track_index):
+        """Read the Live mixer volume parameter and display mapping samples."""
+        if not isinstance(track_index, int):
+            raise TypeError("track_index must be an integer")
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        parameter = self._song.tracks[track_index].mixer_device.volume
+        samples = []
+        for value in (0.0, 0.25, 0.5, 0.75, 0.85, 0.9, 1.0):
+            try:
+                display = parameter.str_for_value(value)
+            except Exception as exc:
+                display = "<unavailable: %s>" % exc
+            samples.append({"value": value, "display": display})
+        return {
+            "track_index": track_index,
+            "track_name": self._song.tracks[track_index].name,
+            "value": float(parameter.value),
+            "current_display": parameter.str_for_value(parameter.value),
+            "min": float(parameter.min),
+            "max": float(parameter.max),
+            "samples": samples,
+        }
+
+    def _set_track_volume_value(self, track_index, value):
+        """Set a track mixer volume using Live's normalized parameter value."""
+        if not isinstance(track_index, int):
+            raise TypeError("track_index must be an integer")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise TypeError("value must be numeric")
+        value = float(value)
+        if value != value or value in (float("inf"), float("-inf")):
+            raise ValueError("value must be finite")
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        parameter = self._song.tracks[track_index].mixer_device.volume
+        if value < float(parameter.min) or value > float(parameter.max):
+            raise ValueError("volume value is out of range")
+        old_value = float(parameter.value)
+        parameter.value = value
+        return {
+            "track_index": track_index,
+            "track_name": self._song.tracks[track_index].name,
+            "old_value": old_value,
+            "value": float(parameter.value),
+            "min": float(parameter.min),
+            "max": float(parameter.max),
+        }
+
     def _create_midi_track(self, index):
         """Create a new MIDI track at the specified index"""
         try:
@@ -1114,6 +1203,8 @@ class AbletonMCP(ControlSurface):
                     "start_time": clip.start_time,
                     "end_time": clip.end_time,
                     "length": clip.length,
+                    "start_marker": getattr(clip, "start_marker", None),
+                    "end_marker": getattr(clip, "end_marker", None),
                     "color": clip.color,
                     "is_midi_clip": clip.is_midi_clip,
                     "is_audio_clip": clip.is_audio_clip,
@@ -1129,6 +1220,124 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error getting arrangement clips: " + str(e))
             raise
+
+    def _set_arrangement_clip_end_time(
+        self, track_index, clip_index, end_time, allow_extend=False
+    ):
+        """Trim a clip's audio-content marker to a global timeline end.
+
+        Live exposes the Arrangement clip edge as read-only in this API. The
+        operation therefore changes ``end_marker``; the Arrangement edge is
+        reported separately so callers do not confuse content trimming with
+        moving the clip on the timeline.
+        """
+        if not isinstance(track_index, INTEGER_TYPES):
+            raise TypeError("track_index must be an integer")
+        if not isinstance(clip_index, INTEGER_TYPES):
+            raise TypeError("clip_index must be an integer")
+        if not isinstance(end_time, (int, float)) or isinstance(end_time, bool):
+            raise TypeError("end_time must be numeric")
+        if end_time != end_time or end_time in (float("inf"), float("-inf")):
+            raise ValueError("end_time must be finite")
+        if not isinstance(allow_extend, bool):
+            raise TypeError("allow_extend must be a boolean")
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+
+        track = self._song.tracks[track_index]
+        arrangement_clips = list(track.arrangement_clips)
+        if clip_index < 0 or clip_index >= len(arrangement_clips):
+            raise IndexError("Arrangement clip index out of range")
+
+        clip = arrangement_clips[clip_index]
+        old_start_time = float(clip.start_time)
+        old_end_time = float(clip.end_time)
+        start_marker = float(getattr(clip, "start_marker"))
+        old_end_marker = float(getattr(clip, "end_marker"))
+        end_time = float(end_time)
+        if end_time <= old_start_time:
+            raise ValueError("end_time must be after the clip start")
+        if not allow_extend and end_time > old_end_time:
+            raise ValueError(
+                "trim-only operation cannot extend the current arrangement clip"
+            )
+
+        marker_span = old_end_marker - start_marker
+        arrangement_span = old_end_time - old_start_time
+        if marker_span <= 0.0 or arrangement_span <= 0.0:
+            raise ValueError("clip markers do not define a positive timeline span")
+        marker_per_timeline_unit = marker_span / arrangement_span
+        new_end_marker = start_marker + (
+            (end_time - old_start_time) * marker_per_timeline_unit
+        )
+        if new_end_marker <= start_marker:
+            raise ValueError("end_time produces an empty clip")
+        clip.end_marker = new_end_marker
+        effective_end_time = old_start_time + (
+            (float(clip.end_marker) - start_marker) / marker_per_timeline_unit
+        )
+        return {
+            "track_index": track_index,
+            "track_name": track.name,
+            "clip_index": clip_index,
+            "old_start_time": old_start_time,
+            "old_end_time": old_end_time,
+            "requested_end_time": end_time,
+            "effective_end_time": effective_end_time,
+            "clip_end_time": float(clip.end_time),
+            "old_end_marker": old_end_marker,
+            "new_end_marker": float(clip.end_marker),
+            "allow_extend": allow_extend,
+        }
+
+    def _set_arrangement_clip_gain(self, track_index, clip_index, gain_db):
+        """Set an audio Arrangement clip's clip gain in dB.
+
+        Clip gain is a safer MCP fallback for broad vocal level rides when the
+        public Live object model cannot insert Arrangement envelope points.
+        It changes only the selected audio clip and is reported with a
+        readback value so callers can verify whether the Live version exposes
+        this property as writable.
+        """
+        if not isinstance(track_index, INTEGER_TYPES):
+            raise TypeError("track_index must be an integer")
+        if not isinstance(clip_index, INTEGER_TYPES):
+            raise TypeError("clip_index must be an integer")
+        if not isinstance(gain_db, (int, float)) or isinstance(gain_db, bool):
+            raise TypeError("gain_db must be numeric")
+        if gain_db != gain_db or gain_db in (float("inf"), float("-inf")):
+            raise ValueError("gain_db must be finite")
+        gain_db = float(gain_db)
+        if gain_db < -70.0 or gain_db > 24.0:
+            raise ValueError("gain_db must be between -70 and 24 dB")
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+
+        track = self._song.tracks[track_index]
+        arrangement_clips = list(track.arrangement_clips)
+        if clip_index < 0 or clip_index >= len(arrangement_clips):
+            raise IndexError("Arrangement clip index out of range")
+
+        clip = arrangement_clips[clip_index]
+        if not bool(getattr(clip, "is_audio_clip", False)):
+            raise ValueError("Arrangement clip must be an audio clip")
+        if not hasattr(clip, "gain"):
+            raise AttributeError("Live audio clip does not expose gain")
+
+        old_gain_db = float(clip.gain)
+        clip.gain = gain_db
+        new_gain_db = float(clip.gain)
+        return {
+            "track_index": track_index,
+            "track_name": track.name,
+            "clip_index": clip_index,
+            "clip_name": clip.name,
+            "old_gain_db": old_gain_db,
+            "requested_gain_db": gain_db,
+            "new_gain_db": new_gain_db,
+            "start_time": float(clip.start_time),
+            "end_time": float(clip.end_time),
+        }
 
     def _clear_notes_from_clip(self, track_index, clip_index):
         """Remove all MIDI notes from a Session clip.

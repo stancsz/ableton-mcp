@@ -251,9 +251,11 @@ Once the config file has been set on Claude, and the remote script is running in
 - Load instruments and effects from Ableton's browser
 - Add notes to MIDI clips
 - Change tempo and other session parameters
-- Validate/request a guarded `export_audio` Main render contract. Live's public
-  API does not expose native offline rendering, so the current helper reports
-  a structured blocker until its Windows UI bridge is explicitly enabled.
+- Export the Main path through the MCP-facing guarded Windows bridge. Live's
+  public API does not expose native offline rendering, so the bridge drives the
+  application dialog only when `ABLETON_MCP_UI_EXPORT=1` is explicitly set,
+  then verifies the exact WAV format, output, and duration. The verified path
+  currently supports Main-only 44.1 kHz / 24-bit WAV files in Downloads.
 
 ### Example Commands
 

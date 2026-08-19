@@ -21,6 +21,7 @@ from tools.live_export import (
     capability_report,
     export_audio as run_live_export,
 )
+from tools.live_save import LiveSaveError, save_live_set as run_live_save
 
 ABLETON_HOST = os.environ.get("ABLETON_HOST", "localhost")
 ABLETON_PORT = int(os.environ.get("ABLETON_PORT", "9877"))
@@ -153,6 +154,9 @@ class AbletonConnection:
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement",
+            "set_arrangement_clip_end_time",
+            "set_arrangement_clip_gain",
+            "set_track_volume_value",
             "create_locator"
         ]
 
@@ -970,9 +974,9 @@ def export_audio(
     """Export the Main output through the guarded desktop bridge.
 
     Ableton's public Remote Script API does not expose offline rendering, so
-    this tool reports a structured capability/blocker until the opt-in Windows
-    UI bridge is enabled and its range/completion checks pass.  It never
-    reports success from a mere shortcut or dialog click.
+    this MCP tool uses the explicitly opt-in Windows bridge and validates the
+    rendered WAV before reporting success. It never reports success from a
+    mere shortcut or dialog click.
     """
     try:
         request = ExportRequest(
@@ -993,6 +997,24 @@ def export_audio(
         )
     except Exception as e:
         logger.error(f"Error exporting audio: {str(e)}")
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+@telemetry_tool("save_set")
+def save_set(ctx: Context, user_prompt: str = "") -> str:
+    """Save the current Live Set through the guarded MCP desktop bridge.
+
+    The public Live Object Model has no portable save function. The bridge
+    sends one Ctrl+S only when Live reports a dirty title and verifies that the
+    title's ``*`` marker disappears before returning success.
+    """
+    try:
+        return json.dumps(run_live_save(), indent=2)
+    except LiveSaveError as e:
+        return json.dumps({"status": "blocked", "error": str(e)}, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving Live Set: {str(e)}")
         return json.dumps({"status": "error", "error": str(e)}, indent=2)
 
 
@@ -1363,6 +1385,127 @@ def get_arrangement_clips(ctx: Context, track_index: int, user_prompt: str = "")
     except Exception as e:
         logger.error(f"Error getting arrangement clips: {str(e)}")
         return f"Error getting arrangement clips: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_arrangement_clip_end_time")
+@trajectory_tool("set_arrangement_clip_end_time")
+def set_arrangement_clip_end_time(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    end_time: float,
+    allow_extend: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """Trim an Arrangement clip's audio content to a global timeline beat.
+
+    Live exposes the Arrangement edge as read-only through the public object
+    model, so this changes the clip's content marker. The response includes
+    ``effective_end_time`` and the unchanged ``clip_end_time`` separately.
+    The default is trim-only. Set ``allow_extend`` explicitly only to restore
+    a previously recorded marker during a reversible A/B.
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("set_arrangement_clip_end_time")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_arrangement_clip_end_time", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "end_time": end_time,
+            "allow_extend": allow_extend,
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error setting arrangement clip end time: {str(e)}")
+        return f"Error setting arrangement clip end time: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_arrangement_clip_gain")
+@trajectory_tool("set_arrangement_clip_gain")
+def set_arrangement_clip_gain(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    gain_db: float,
+    user_prompt: str = "",
+) -> str:
+    """Set an audio Arrangement clip's clip gain in dB.
+
+    This is the MCP-first fallback for broad vocal level correction when the
+    public Live object model cannot write Arrangement envelope points. It
+    changes only one audio clip and returns the Live readback value.
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("set_arrangement_clip_gain")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_arrangement_clip_gain", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "gain_db": gain_db,
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error setting arrangement clip gain: {str(e)}")
+        return f"Error setting arrangement clip gain: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("get_track_volume_info")
+@trajectory_tool("get_track_volume_info")
+def get_track_volume_info(
+    ctx: Context,
+    track_index: int,
+    user_prompt: str = "",
+) -> str:
+    """Read a track mixer's normalized volume range and Live display samples."""
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("get_track_volume_info")
+        if missing:
+            return missing
+        result = get_ableton_connection().send_command(
+            "get_track_volume_info", {"track_index": track_index}
+        )
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error reading track volume info: {str(e)}")
+        return f"Error reading track volume info: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_track_volume_value")
+@trajectory_tool("set_track_volume_value")
+def set_track_volume_value(
+    ctx: Context,
+    track_index: int,
+    value: float,
+    user_prompt: str = "",
+) -> str:
+    """Set a track mixer volume using Live's normalized parameter value."""
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("set_track_volume_value")
+        if missing:
+            return missing
+        result = get_ableton_connection().send_command(
+            "set_track_volume_value", {"track_index": track_index, "value": value}
+        )
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error setting track volume value: {str(e)}")
+        return f"Error setting track volume value: {str(e)}"
 
 
 @mcp.tool()

@@ -135,6 +135,12 @@ volume automation at `1/8` or `1/16` notes. Keep the dry intelligible path
 available and audition the chop only after the bus pump works. Do not put a
 full-time stutter on the only lead vocal without a human check.
 
+If a grounded listening check finds that an existing stutter is tightly grid-
+synced, repeats syllables coherently, and functions as the track's EDM identity,
+classify it as intentional vocal-chop texture rather than a defect. Retain it
+unless a human specifically asks for a smoother lead; diagnose baked-in clip
+processing separately from a gate or stutter device in the Live chain.
+
 ### 5. Verify and hand off
 
 Before reporting completion:

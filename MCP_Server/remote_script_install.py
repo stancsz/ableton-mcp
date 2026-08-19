@@ -12,7 +12,7 @@ from pathlib import Path
 logger = logging.getLogger("ableton-mcp-remote-script")
 
 # Must match SCRIPT_VERSION in AbletonMCP_Remote_Script/__init__.py
-EXPECTED_REMOTE_SCRIPT_VERSION = "1.7.0"
+EXPECTED_REMOTE_SCRIPT_VERSION = "1.10.0"
 REMOTE_SCRIPT_FOLDER_NAME = "AbletonMCP"
 
 
@@ -196,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         "\nIf Ableton was already open: restart Live, or re-select AbletonMCP "
-        "under Preferences → Link/Tempo/MIDI → Control Surface."
+        "under Preferences -> Link/Tempo/MIDI -> Control Surface."
     )
     return 0
 
