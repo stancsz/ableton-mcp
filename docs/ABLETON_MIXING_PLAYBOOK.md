@@ -217,30 +217,29 @@ small.
 
 ## Gemini listening protocol
 
-Use the direct audio-capable route first:
+Use the local Subroute subscription audio route on port 4000:
 
 ```powershell
-python tools\gemini_audio_feedback.py <exact-wav> --project stancsz-381415 --profile compact --focus "one issue"
+python tools\gemini_audio_feedback.py <exact-wav> --profile compact --focus "one issue"
 ```
 
-Require `AUDIO_GROUNDING: PASS`, the model/version, the exact file path, and
+Require `AUDIO_GROUNDING: PASS`, the subscription model alias, provider usage, exact file path, and
 timestamped observations. Ask for one reversible Ableton action at a time and
 ask Gemini to reassess female level, mono/stereo center, translation, and
 pleasantness after every candidate. `AUDIO UNAVAILABLE` is not a listening
-result: start a new chat, upload the exact file again, and retry once. The
+result: retry the exact Subroute request once with `--no-cache`. The
 Antigravity CLI is useful for text/image reasoning here but is not an audio
 listener in this environment.
 
 Keep Gemini calls token-efficient. The helper's compact profile returns at most
-three issues, defaults to `maxOutputTokens=420` and the verified current-route
-`thinkingLevel=LOW`, and
-automatically reuses a report when the audio SHA, model, focus, profile, and
+three issues, requests `max_tokens=420`, and
+automatically reuses a report when the audio SHA, model, Subroute destination, focus, profile, and
 generation budget all match. Use `--no-cache` only for a deliberate fresh
 re-listen. For a local A/B
 question, an explicitly created 15--30 second PCM excerpt may be sent with
 `--kind excerpt --focus "..."`; never use an excerpt to claim full-mix balance
 or release readiness. After the final mix is chosen, make one complete
-full-track call with `--profile release` (600 output-token cap) and retain that
+full-track call with `--profile release` (600 requested output tokens) and retain that
 report as the release evidence. The workflow spends long output only on the
 final decision, not on every intermediate A/B.
 
@@ -248,19 +247,22 @@ When the question is musical rather than measurable, prefer the smaller taste
 call:
 
 ```powershell
-python tools\gemini_audio_feedback.py <exact-wav> --project stancsz-381415 --profile taste --focus "does the drop feel too boomy or intentionally heavy?"
+python tools\gemini_audio_feedback.py <exact-wav> --profile taste --focus "does the drop feel too boomy or intentionally heavy?"
 ```
 
 It returns only a yes/no or A/B answer, two timestamped reasons, and one action
-(`maxOutputTokens=420`, verified `thinkingLevel=LOW`; typical answers use far
+(`max_tokens=420` requested; typical answers use far
 fewer). Route spectrum peaks, masking
 bands, gain reduction, true peak, loudness, and correlation to the local audit
 and the installed Pro-Q 4, soothe2, Pro-L 2, Ozone, or other meters first;
 Gemini's job is the human-like taste check, not duplicating a visual analyzer.
 Do not ask the single-file helper to compare to an unattached baseline; ask what
-the current file feels like. The current 3.7 endpoint rejected
-`thinkingLevel=MINIMAL`, so `--thinking-level LOW` is the default route and
-`MEDIUM` is reserved for a deliberate final review.
+the current file feels like. Subroute uses Chat `input_audio` at
+`http://127.0.0.1:4000/v1/chat/completions` with `gemini-subscription`.
+Do not use a Gemini key, Vertex, or gcloud as a fallback. Output/thinking limits
+are backend-managed: requested token budgets are not enforced caps. The alias
+does not attest a model version. Accept only exact PCM WAV/MP3 up to 20 MiB;
+do not silently compress a full mix or substitute a short release excerpt.
 
 ## Evidence and export hygiene
 

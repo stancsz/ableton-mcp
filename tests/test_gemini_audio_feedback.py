@@ -1,4 +1,10 @@
 from pathlib import Path
+import base64
+import io
+import json
+import urllib.error
+
+import pytest
 
 import tools.gemini_audio_feedback as feedback
 
@@ -119,7 +125,6 @@ def test_cache_key_includes_generation_budget_when_supplied() -> None:
             "KIND: full-track",
             "FOCUS: vocal clarity",
             "MAX_OUTPUT_TOKENS: 420",
-            "THINKING_LEVEL: LOW",
         ]
     )
 
@@ -131,7 +136,6 @@ def test_cache_key_includes_generation_budget_when_supplied() -> None:
         kind="full-track",
         focus="vocal clarity",
         max_output_tokens=420,
-        thinking_level="LOW",
     )
     assert not _cached_report_matches(
         report,
@@ -141,7 +145,6 @@ def test_cache_key_includes_generation_budget_when_supplied() -> None:
         kind="full-track",
         focus="vocal clarity",
         max_output_tokens=240,
-        thinking_level="LOW",
     )
 
 
@@ -164,8 +167,6 @@ def test_api_error_is_written_as_structured_unverified_report(
             "taste",
             "--focus",
             "judge vocal focus",
-            "--thinking-level",
-            "MINIMAL",
             "--output",
             str(report_path),
         ]
@@ -176,3 +177,105 @@ def test_api_error_is_written_as_structured_unverified_report(
     assert "AUDIO_GROUNDING: UNVERIFIED" in report
     assert "unsupported setting" in report
     assert "AUDIO UNAVAILABLE" in report
+
+
+def test_request_sends_exact_audio_to_local_gateway_without_google_credentials(tmp_path, monkeypatch):
+    audio = tmp_path / "mix.wav"
+    audio.write_bytes(b"RIFF-exact-authorized-bytes")
+    monkeypatch.setenv("GEMINI_API_KEY", "unused-google-key")
+    monkeypatch.setenv("SUBROUTE_API_KEY", "gateway-only-key")
+    captured = []
+
+    class Opener:
+        def open(self, request, timeout):
+            captured.append(request)
+            assert timeout == 400
+            return io.BytesIO(b'{"choices": []}')
+
+    def build_opener(*handlers):
+        assert handlers[0].proxies == {}
+        assert handlers[1].redirect_request(None, None, 302, "", {}, "https://other.test") is None
+        return Opener()
+
+    monkeypatch.setattr(feedback.urllib.request, "build_opener", build_opener)
+    feedback._request(audio, feedback.DEFAULT_BASE_URL, feedback.DEFAULT_MODEL, "listen", 420)
+    request = captured[0]
+    assert request.full_url == "http://127.0.0.1:4000/v1/chat/completions"
+    assert request.get_header("Authorization") == "Bearer gateway-only-key"
+    body = json.loads(request.data)
+    assert body["model"] == "gemini-subscription"
+    block = body["messages"][0]["content"][1]
+    assert block["type"] == "input_audio"
+    assert block["input_audio"]["format"] == "wav"
+    assert base64.b64decode(block["input_audio"]["data"]) == audio.read_bytes()
+    assert "unused-google-key" not in str(request.headers) + str(body)
+
+
+@pytest.mark.parametrize("url", ["https://google.test", "http://localhost:4001", "http://key@localhost:4000", "http://localhost:4000/?key=secret"])
+def test_gateway_scope_rejects_other_destinations(url):
+    with pytest.raises(ValueError):
+        feedback.resolve_base_url(url)
+
+
+def test_cache_cannot_reuse_a_vertex_report_for_subroute():
+    report = "\n".join([
+        "AUDIO_SHA256: ABC", "MODEL_REQUESTED: gemini-subscription",
+        "PROFILE: taste", "KIND: full-track", "FOCUS: vocal clarity",
+    ])
+    kwargs = dict(audio_hash="ABC", model="gemini-subscription", profile="taste",
+                  kind="full-track", focus="vocal clarity", base_url=feedback.DEFAULT_BASE_URL)
+    assert not _cached_report_matches(report, **kwargs)
+    report += "\nROUTE: subroute-subscription\nBASE_URL: http://127.0.0.1:4000"
+    assert _cached_report_matches(report, **kwargs)
+
+
+@pytest.mark.parametrize("change,expected", [
+    ({}, 0), ({"model": "codex-luna"}, 2), ({"usage": {}}, 2),
+    ({"choices": {"bad": "response"}}, 2),
+    ({"choices": [{"finish_reason": "length", "message": {"content": "HEARD_AUDIO\nANSWER: good\nWHY: 0:01 clear; 0:02 warm\nACTION: NONE"}}]}, 2),
+    ({"choices": [{"finish_reason": "stop", "message": {"content": "AUDIO UNAVAILABLE"}}]}, 2),
+])
+def test_grounding_requires_completed_subscription_audio_response(tmp_path, monkeypatch, change, expected):
+    audio = tmp_path / "mix.wav"
+    audio.write_bytes(b"RIFF-fixture")
+    output = tmp_path / "feedback.md"
+    payload = {
+        "model": "gemini-subscription", "id": "test-receipt",
+        "usage": {"prompt_tokens": 50, "completion_tokens": 30, "total_tokens": 80},
+        "choices": [{"finish_reason": "stop", "message": {"content": "HEARD_AUDIO\nANSWER: good\nWHY: 0:01 clear; 0:02 warm\nACTION: NONE"}}],
+    }
+    payload.update(change)
+    monkeypatch.setattr(feedback, "_request", lambda *args: payload)
+    assert feedback.main([str(audio), "--profile", "taste", "--focus", "vocal clarity", "--output", str(output)]) == expected
+    report = output.read_text(encoding="utf-8")
+    assert "ROUTE: subroute-subscription" in report
+    assert "RESPONSE_ID: test-receipt" in report
+    assert "backend-managed" in report
+    assert ("AUDIO_GROUNDING: PASS" in report) == (expected == 0)
+
+
+def test_transport_error_redacts_gateway_key(tmp_path, monkeypatch):
+    audio = tmp_path / "mix.mp3"
+    audio.write_bytes(b"ID3-fixture")
+    monkeypatch.setenv("SUBROUTE_API_KEY", "sensitive-key")
+
+    class Opener:
+        def open(self, request, timeout):
+            raise urllib.error.HTTPError(request.full_url, 401, "unauthorized", {}, io.BytesIO(b"sensitive-key rejected"))
+
+    monkeypatch.setattr(feedback.urllib.request, "build_opener", lambda *args: Opener())
+    with pytest.raises(RuntimeError) as error:
+        feedback._request(audio, feedback.DEFAULT_BASE_URL, feedback.DEFAULT_MODEL, "listen", 420)
+    assert "sensitive-key" not in str(error.value)
+    assert "HTTP 401" in str(error.value)
+    assert "rejected" not in str(error.value)  # central transport omits private provider bodies
+
+
+def test_large_wav_is_rejected_without_request_or_conversion(tmp_path, monkeypatch):
+    audio = tmp_path / "mix.wav"
+    with audio.open("wb") as handle:
+        handle.truncate(feedback.MAX_AUDIO_BYTES + 1)
+    monkeypatch.setattr(feedback, "_request", lambda *args: pytest.fail("must not send oversized audio"))
+    with pytest.raises(SystemExit) as error:
+        feedback.main([str(audio)])
+    assert error.value.code == 2

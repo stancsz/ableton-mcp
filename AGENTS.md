@@ -14,56 +14,56 @@ Keep the workflow scoped to the exact artifact and destination established by th
 
 ### Standard audio-feedback route
 
-Use the direct audio-capable Gemini route first:
+Use the local Subroute subscription gateway on port 4000 for audio feedback:
 
 ```powershell
-python tools\gemini_audio_feedback.py <exact-authorized-audio-path> --project stancsz-381415 --profile compact --focus "one issue"
+python tools\gemini_audio_feedback.py <exact-authorized-audio-path> --profile compact --focus "one issue"
 ```
 
-This uses the active `gcloud` account to call Gemini 3.7 through the Vertex
-`generateContent` endpoint. The helper must report `AUDIO_GROUNDING: PASS`, a
-Gemini 3.7 model version, and timestamped observations before any response is
-treated as audio-grounded feedback. It must never print or persist the OAuth
-access token. Record the project and usage metadata because this direct API
-route is authenticated/billed through Google Cloud and must not be assumed to
-share Antigravity subscription quota.
+This sends the exact audio bytes as Chat `input_audio` to
+`http://127.0.0.1:4000/v1/chat/completions`, using `gemini-subscription`.
+Do not use a Gemini API key, Vertex, or `gcloud`, including as an automatic
+fallback. Optional `SUBROUTE_API_KEY` authenticates only to the gateway and
+must never be printed or persisted. Require `AUDIO_GROUNDING: PASS`, a completed
+subscription response, provider usage, and timestamped observations. Record
+the route, response ID, audio hash, model alias, and usage. The gateway does not
+attest the underlying model version; do not claim that the alias proves 3.7.
+Only PCM WAV/MP3 up to 20 MiB is supported; do not silently convert a larger
+full mix or substitute an excerpt for a full-track release audit.
 
 ### Token-efficient Gemini listening loop
 
 Gemini text output is the expensive prediction side of this workflow. Keep
 iterative A/B checks compact and scoped: use one exact candidate, one specific
-focus, and preferably `--profile taste` (default `maxOutputTokens=420` and the
-verified current-route `thinkingBudget=0` compatibility setting). Taste returns only an answer, two timestamped audible
+focus, and preferably `--profile taste` (requested `max_tokens=420`). Taste returns only an answer, two timestamped audible
 reasons, and one action; it is for musical comfort, emotional focus, texture,
-and A/B preference. Use `--profile compact` (`maxOutputTokens=420`) only when a
+and A/B preference. Use `--profile compact` (requested `max_tokens=420`) only when a
 short ranked issue list is genuinely needed. Both profiles let the helper reuse
-a matching report for the same audio SHA/model/focus. Use `--no-cache` only when
+a matching report for the same audio SHA/model/focus and Subroute destination.
+Output and thinking limits are backend-managed; requested budgets are not
+enforced caps. Use `--no-cache` only when
 a genuinely fresh opinion is needed. Do not ask Gemini to restate the entire
 mix history or write a long tutorial.
 
 Do not ask the single-file helper to compare against an unattached version: ask
 what the current file feels like, or attach/use a separately prepared comparison
-workflow. The current `gemini-3.7-flash` endpoint rejected
-`thinkingLevel=MINIMAL` during verification, so the helper intentionally uses
-the accepted legacy zero-budget setting by default and records it in the
-sidecar. `--thinking-level LOW` remains an explicit, opt-in experiment.
+workflow.
 
 For a localized A/B, create an explicitly named 15--30 second PCM diagnostic
 excerpt from the exact WAV and call `--kind excerpt --focus "..."`; treat that
 answer as local troubleshooting evidence only, never as a release verdict.
 After the final candidate is selected, run exactly one complete full-track
-release audit with `--profile release` (the helper caps it at 600 output tokens)
+release audit with `--profile release` (requested budget of 600 output tokens)
 and keep its report. This concentrates long output on the one decision that
 actually needs it while preserving a full-file `AUDIO_GROUNDING: PASS` gate.
 
-Use Antigravity CLI for follow-up reasoning, code, measurement interpretation,
-and report editing—not as the audio listener. Its current agent input contract
-supports text and images only. The Gemini browser workflow remains a fallback
-when the direct route is unavailable.
+Use Subroute's validated audio attachment bridge for listening. A standalone
+Antigravity text invocation is not evidence of listening. If Subroute is
+unavailable, report the failure; do not automatically switch destinations.
 
-If Gemini responds with `AUDIO UNAVAILABLE`, start a new Gemini chat, upload the authorized exact file or files again, and retry the same prepared listening request once. Record the outcome; do not treat a second failure as audible feedback or invent timestamped observations.
+If Gemini responds with `AUDIO UNAVAILABLE`, retry the exact Subroute request once with `--no-cache`. Record the outcome; do not treat a second failure as audible feedback or invent timestamped observations.
 
-Antigravity CLI is not an audio-listening fallback. Even when Gemini 3.7 is available in `agy`, the Antigravity agent path currently supports text and image inputs only; route music checks through a direct Gemini audio-capable API path or the authorized Gemini chat workflow. Do not promote `AUDIO UNAVAILABLE` from `agy` to evidence about the audio file or Gemini's model capability.
+Subroute's subscription audio bridge uses explicit binary attachments and verifies attachment reads. Do not substitute a WAV pathname in a standalone `agy` text prompt for that bridge, or promote a failed text-only invocation to evidence about the audio file.
 
 ### MCP dataset privacy boundary
 
@@ -216,7 +216,7 @@ planning, code inspection, and debugging. It is not currently an audio listener:
 the verified smoke test against a local WAV returned `AUDIO_GROUNDING: FAIL` with
 `unsupported mime type audio/wav`. Do not use an `agy` text response as audible
 Gemini feedback or as a release decision. For listening feedback, use the
-approved direct Gemini 3.7 audio route (or the documented browser upload fallback)
+approved local Subroute subscription audio route on port 4000
 and require `AUDIO_GROUNDING: PASS` plus timestamps. `agy` remains a useful
 secondary reasoning option, not a substitute for the audio-capable route.
 
@@ -269,3 +269,12 @@ completion from an unverified click.
   available, use it only after recording the exact lane, time range, parameter,
   and post-change readback/fresh bounce; otherwise defer the change and keep
   the reproducible MCP candidate unchanged.
+
+## Central music skills
+
+Reusable music skills and prompts are now maintained in the sibling
+`music-creation-skills` (MCS) repository. The local `skills/*/SKILL.md` entries
+forward there; audio-feedback and mix-audit CLIs retain compatibility adapters.
+Use MCS for generic songwriting, composition, Suno and listening policy. This
+repository retains Live control, Remote Script, guarded export/save and these
+Set-specific operating documents. `MCS_ROOT` selects a non-sibling central repo.

@@ -47,16 +47,34 @@ master it, and tell me what plugins to add”). Split those into separate calls.
 The helper rejects an overlong or multi-question `taste` focus so this mistake
 does not silently spend output tokens.
 
+## Subscription audio route
+
+Use `python tools\gemini_audio_feedback.py <exact-authorized-wav-or-mp3>`.
+The helper sends exact bytes as Chat `input_audio` to local Subroute at
+`http://127.0.0.1:4000/v1/chat/completions` with `gemini-subscription`.
+No Gemini API key, Vertex, or gcloud fallback is permitted. An optional
+`SUBROUTE_API_KEY` authenticates only to the gateway. Require a completed
+subscription response with provider usage and the timestamped grounded schema;
+retain the response ID, route, and audio hash. The underlying model version is
+not attested by the returned alias. The gateway verifies binary attachment reads
+and disables Advisor for audio without changing its saved routing policy.
+
+Only PCM WAV/MP3 up to 20 MiB is supported. Do not automatically convert or
+compress a larger candidate; use an explicitly prepared compatible full file
+for a release audit. An excerpt remains diagnostic evidence only.
+
 ## Profile and token routing
 
-| Stage | Profile | Use | Default output cap |
+| Stage | Profile | Use | Requested output budget |
 |---|---|---|---:|
 | Fast musical A/B | `taste` | one human listening decision | 420 |
 | Short issue triage | `compact` | up to three ranked issues when taste is not enough | 420 |
 | Final release evidence | `release` | one complete full-track blocker/checks report | 600 |
 
 Use `--no-cache` only when the same file and focus need a genuinely fresh
-opinion. A cached report is valid for the same audio SHA, model, profile,
+opinion. Output and thinking limits are subscription-backend-managed; these
+budgets are requests, not enforced caps. A cached report is valid for the same
+audio SHA, model, Subroute route/destination, profile,
 kind, normalized focus, and generation budget. Do not run a release audit after
 every parameter move; run it once after the candidate is selected.
 
@@ -76,6 +94,10 @@ Interpretation rules:
 
 - `AUDIO_GROUNDING: PASS` plus `ACTION: NONE` means retain the candidate unless
   a stronger local or human reason contradicts it.
+- The helper's PASS gate verifies the completed subscription route, provider
+  usage, and timestamped response schema. It does not prove perceptual accuracy.
+  The port-4000 synthetic smoke on 2026-10-01 completed successfully but missed
+  a known pitch change at 5 seconds; see `docs/SUBROUTE_AUDIO_ROUTE_CHECK.md`.
 - If Gemini and the visual evidence disagree, do not average them into a new
   setting. Narrow the question or defer the change.
 - A taste pass is not a release verdict. Use the `release` profile only on the
