@@ -22,7 +22,20 @@ except ImportError:
 
 # Constants for socket communication
 DEFAULT_PORT = 9877
-HOST = "0.0.0.0"
+# Loopback, not 0.0.0.0. This socket takes unauthenticated commands that import
+# arbitrary absolute paths, load browser items and drive the transport, so
+# anything that can reach the port controls the DAW. Binding every interface
+# exposed that to the whole local network — and to any network the machine is
+# routable from.
+#
+# Running Live and the MCP server on different machines is the one legitimate
+# reason to widen this; set ABLETON_MCP_HOST to do so deliberately, and put it
+# behind a trusted network or an explicit relay.
+HOST = os.environ.get("ABLETON_MCP_HOST", "127.0.0.1")
+
+# A command that never completes must not grow the buffer without bound.
+# Generous enough for a large add_notes_to_clip payload.
+MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
@@ -195,70 +208,66 @@ class AbletonMCP(ControlSurface):
         """Handle communication with a connected client"""
         self.log_message("Client handler started")
         client.settimeout(None)  # No timeout for client socket
-        buffer = ''  # Changed from b'' to '' for Python 2
-        
+        # Accumulate raw bytes, never per-chunk text. A multi-byte UTF-8
+        # character (an accented clip name, an emoji) can straddle two recv()
+        # boundaries; decoding each chunk on its own raises there, and the old
+        # code answered that with an error frame pushed into a stream the
+        # client was still reading a real response from — desynchronising the
+        # connection for good.
+        buffer = b''
+
         try:
             while self.running:
                 try:
                     # Receive data
                     data = client.recv(8192)
-                    
+
                     if not data:
                         # Client disconnected
                         self.log_message("Client disconnected")
                         break
-                    
-                    # Accumulate data in buffer with explicit encoding/decoding
+
+                    buffer += data
+
+                    if len(buffer) > MAX_REQUEST_BYTES:
+                        buffer = b''
+                        raise ValueError(
+                            "Request exceeded %d bytes without a complete JSON command"
+                            % MAX_REQUEST_BYTES)
+
                     try:
-                        # Python 3: data is bytes, decode to string
-                        buffer += data.decode('utf-8')
-                    except AttributeError:
-                        # Python 2: data is already string
-                        buffer += data
-                    
-                    try:
-                        # Try to parse command from buffer
-                        command = json.loads(buffer)  # Removed decode('utf-8')
-                        buffer = ''  # Clear buffer after successful parse
-                        
-                        self.log_message("Received command: " + str(command.get("type", "unknown")))
-                        
-                        # Process the command and get response
-                        response = self._process_command(command)
-                        
-                        # Send the response with explicit encoding
-                        try:
-                            # Python 3: encode string to bytes
-                            client.sendall(json.dumps(response).encode('utf-8'))
-                        except AttributeError:
-                            # Python 2: string is already bytes
-                            client.sendall(json.dumps(response))
-                    except ValueError:
-                        # Incomplete data, wait for more
+                        # Only a fully received command decodes and parses.
+                        # Either error means "not all here yet", so wait.
+                        command = json.loads(buffer.decode('utf-8'))
+                    except (ValueError, UnicodeDecodeError):
                         continue
-                        
+
+                    buffer = b''  # Clear buffer after successful parse
+
+                    self.log_message("Received command: " + str(command.get("type", "unknown")))
+
+                    # Process the command and get response
+                    response = self._process_command(command)
+
+                    # Send the response with explicit encoding
+                    client.sendall(json.dumps(response).encode('utf-8'))
+
                 except Exception as e:
                     self.log_message("Error handling client data: " + str(e))
                     self.log_message(traceback.format_exc())
-                    
-                    # Send error response if possible
+
+                    # Every error that reaches here leaves the request/response
+                    # stream in an unknown state, so report it and close rather
+                    # than carry on out of step with the client.
                     error_response = {
                         "status": "error",
                         "message": str(e)
                     }
                     try:
-                        # Python 3: encode string to bytes
                         client.sendall(json.dumps(error_response).encode('utf-8'))
-                    except AttributeError:
-                        # Python 2: string is already bytes
-                        client.sendall(json.dumps(error_response))
-                    except:
-                        # If we can't send the error, the connection is probably dead
-                        break
-                    
-                    # For serious errors, break the loop
-                    if not isinstance(e, ValueError):
-                        break
+                    except Exception:
+                        pass
+                    break
         except Exception as e:
             self.log_message("Error in client handler: " + str(e))
         finally:
@@ -703,7 +712,7 @@ class AbletonMCP(ControlSurface):
                 "is_midi_track": track.has_midi_input,
                 "mute": track.mute,
                 "solo": track.solo,
-                "arm": arm_state,
+                "arm": self._safe_arm(track),
                 "volume": track.mixer_device.volume.value,
                 "panning": track.mixer_device.panning.value,
                 "clip_slots": clip_slots,
@@ -762,6 +771,26 @@ class AbletonMCP(ControlSurface):
             "min": float(parameter.min),
             "max": float(parameter.max),
         }
+
+    def _safe_arm(self, track):
+        """Read track.arm, returning False for tracks that have no arm state.
+
+        Live raises RuntimeError("Master and Return Tracks have no 'Arm'
+        state!") for group tracks as well as return and main tracks. A
+        `getattr(track, "arm", False)` does not guard this: the attribute
+        exists, so getattr's default never applies -- reading it is what
+        throws, and the error is a RuntimeError rather than an AttributeError.
+
+        Check can_be_armed first so the common path does not rely on raising,
+        and keep a narrow catch for Live versions that do not expose that
+        property on every track type.
+        """
+        try:
+            if not getattr(track, "can_be_armed", False):
+                return False
+            return bool(track.arm)
+        except (AttributeError, RuntimeError):
+            return False
 
     def _create_midi_track(self, index):
         """Create a new MIDI track at the specified index"""
@@ -2007,7 +2036,7 @@ class AbletonMCP(ControlSurface):
                         elif kind == "solo_changed":
                             detail["solo"] = bool(t.solo)
                         elif kind == "arm_changed":
-                            detail["arm"] = bool(getattr(t, "arm", False))
+                            detail["arm"] = self._safe_arm(t)
                         elif kind == "devices_changed":
                             detail["device_count"] = len(t.devices)
                         elif kind == "volume_changed":
@@ -2567,7 +2596,7 @@ class AbletonMCP(ControlSurface):
                     "is_midi_track": bool(track.has_midi_input),
                     "mute": bool(track.mute),
                     "solo": bool(track.solo),
-                    "arm": bool(getattr(track, "arm", False)),
+                    "arm": self._safe_arm(track),
                     "volume": float(track.mixer_device.volume.value),
                     "panning": float(track.mixer_device.panning.value),
                     "sends": self._serialize_sends(track),
